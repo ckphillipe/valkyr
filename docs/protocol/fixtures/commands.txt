@@ -1,0 +1,11 @@
+AUTH app-key
+AUTH adapter-key ADAPTER 00000000-0000-0000-0000-000000000001
+GET /users 42
+SET /users 42 {"name":"Ada"} EX 300
+SET_BATCH /users 1 {"name":"Ada"} 2 null
+DELETE /users 42*
+MOVE /users::draft /users::published
+PROVIDE /users * MAX_RATE 100 TIMEOUT 250 MISS_TTL 30
+STORE /users *
+PING
+STATS

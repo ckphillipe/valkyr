@@ -1,0 +1,45 @@
+name: Validate Go SDK release
+
+on:
+  push:
+    tags:
+      - "valkyr-go/v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Go module version to resolve through proxy.golang.org
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: valkyr-go/go.mod
+      - name: Verify tag and module metadata
+        working-directory: valkyr-go
+        env:
+          RAW_RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          version="${RAW_RELEASE_VERSION#valkyr-go/}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            test "$GITHUB_REF_NAME" = "valkyr-go/$version"
+          fi
+          test "$(go list -m)" = "github.com/ckphil/valkyr/valkyr-go"
+          test "$(go env GOVERSION)" = "go1.25.0" || go version | grep -Eq 'go1\.25'
+      - name: Validate published module path
+        env:
+          RAW_RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          version="$RAW_RELEASE_VERSION"
+          version="${version#valkyr-go/}"
+          GOPROXY=https://proxy.golang.org go list -m -json "github.com/ckphil/valkyr/valkyr-go@$version"

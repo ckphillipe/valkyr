@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example v0.1.0)
+        required: true
+        type: string
+      publish:
+        description: Publish verified crates to crates.io
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify tag and workspace
+        run: |
+          test "$(git tag --points-at HEAD)" = "${{ inputs.tag }}"
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Verify crates
+        run: |
+          cargo package -p valkyr-core --allow-dirty --list
+          cargo package -p valkyr-client --allow-dirty --list
+          cargo package -p valkyr-server --allow-dirty --list
+          cargo package -p valkyr-db-adapter --allow-dirty --list
+      - name: Build release artifacts
+        run: |
+          cargo build --release -p valkyr-server -p valkyr-db-adapter
+          mkdir release
+          tar -C target/release -czf release/valkyr-server-linux-x86_64.tar.gz valkyr-server
+          tar -C target/release -czf release/valkyr-db-adapter-linux-x86_64.tar.gz valkyr-db-adapter
+          sha256sum release/* > release/SHA256SUMS
+      - name: Publish crates
+        if: ${{ inputs.publish }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish -p valkyr-core
+          cargo publish -p valkyr-client
+          cargo publish -p valkyr-server
+          cargo publish -p valkyr-db-adapter
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ inputs.tag }}" release/* --generate-notes --verify-tag

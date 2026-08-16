@@ -1,0 +1,23 @@
+# Valkyr server configuration for Docker or Kubernetes.
+# A bootstrap key file is required even for a direct local launch.
+native_listen: 0.0.0.0:8081
+http_listen: 0.0.0.0:8080
+metrics_listen: 0.0.0.0:8090
+log_filter: info
+
+## Disposable test certificate for the native TCP line protocol.
+tls:
+  listen: 0.0.0.0:8443
+  certificate_file: ./tls/localhost.crt
+  private_key_file: ./tls/localhosts.key
+
+# Mount the bootstrap key file read-only. Use this credential to provision
+# /__auth records for normal provider and client API keys.
+auth:
+  bootstrap_api_key_file: ./bootstrap-api-key
+  session_ttl_seconds: 3600
+
+# Optional Moka cache policies. Both are unset by default.
+# cache:
+#   max_capacity: 100000
+#   time_to_idle_seconds: 3600

@@ -1,0 +1,52 @@
+GET http://127.0.0.1:8080/__auth?akey HTTP/1.1
+Authorization: Bearer only-for-example
+
+###
+PUT http://127.0.0.1:8080/__auth?akey HTTP/1.1
+Authorization: Bearer only-for-example
+Content-Type: application/json
+
+{
+    "enabled": true,
+    "client_id": "c1",
+    "name": "n1",
+    "permissions": [
+        {
+            "namespace": "/example",
+            "operations": ["read", "write","read_encrypted","write_encrypted"]
+        },
+         {
+            "namespace": "/weather",
+            "operations": ["read", "write"]
+        }
+    ]
+}
+
+###
+PUT http://127.0.0.1:8080/example?akey HTTP/1.1
+Authorization: Bearer akey
+Content-Type: application/json
+
+"Alice"
+
+###
+GET http://127.0.0.1:8080/example?akey HTTP/1.1
+Authorization: Bearer akey
+
+###
+GET http://127.0.0.1:8080/example?~phone~ HTTP/1.1
+Authorization: Bearer akey
+###
+GET http://127.0.0.1:8080/example?phone HTTP/1.1
+Authorization: Bearer akey
+
+###
+PUT http://127.0.0.1:8080/example?~phone~ HTTP/1.1
+Authorization: Bearer akey
+Content-Type: application/json
+
+"0123456789"
+
+###
+GET  http://127.0.0.1:8080/weather/loc::24.2535,121.5610?temperature
+Authorization: Bearer only-for-example

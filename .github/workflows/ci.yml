@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+    tags: ["*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Python SDK
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "valkyr-python/[dev]"
+      - name: Lint and type check
+        run: |
+          cd valkyr-python
+          ruff check src tests examples
+          ruff format --check src tests examples
+          mypy src
+      - name: Unit tests
+        run: |
+          cd valkyr-python
+          python -m pytest tests/unit/ -v
+      - name: Build and validate distribution
+        run: |
+          cd valkyr-python
+          python -m build
+          python -m twine check --strict dist/*
+          wheel_venv="${RUNNER_TEMP}/valkyr-wheel-venv"
+          python -m venv "$wheel_venv"
+          "$wheel_venv/bin/python" -m pip install --upgrade pip
+          "$wheel_venv/bin/python" -m pip install --force-reinstall --no-deps dist/*.whl
+          "$wheel_venv/bin/python" -c "from importlib.metadata import metadata, version; import valkyr; assert metadata('valkyr')['Name'] == 'valkyr'; assert version('valkyr') == '0.1.0'; assert valkyr.__version__ == '0.1.0'"
+      - name: Smoke-test examples
+        run: |
+          cd valkyr-python
+          python -m py_compile examples/client_basic.py examples/provider_store.py
+      - name: Integration tests
+        run: |
+          cd valkyr-python
+          python -m pytest tests/integration/ -v
+
+  go:
+    name: Go SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: valkyr-go/go.mod
+      - name: Verify formatting
+        working-directory: valkyr-go
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        working-directory: valkyr-go
+        run: go vet ./...
+      - name: Unit and race tests
+        working-directory: valkyr-go
+        run: go test -race ./...
+      - name: Live integration tests
+        working-directory: valkyr-go
+        run: go test -tags=integration -race ./tests/integration -v
+      - name: Build examples
+        working-directory: valkyr-go
+        run: go build ./examples/...
+
+  docker-images:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: server
+            dockerfile: valkyr-server/Dockerfile
+          - image: db-adapter
+            dockerfile: valkyr-db-adapter/Dockerfile
+          - image: openbao-adapter
+            dockerfile: valkyr-openbao-adapter/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/valkyr-${{ matrix.image }}:${{ github.ref_name }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/valkyr-${{ matrix.image }}:latest
+          push: true
+          cache-from: type=gha,scope=valkyr-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=valkyr-${{ matrix.image }}

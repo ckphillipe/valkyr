@@ -1,0 +1,142 @@
+# SQLite adapter example for Valkyr's reserved authentication and encryption-key
+# namespaces.
+# SQLite protects this file through filesystem permissions. Store only the
+# complete JSON auth record in auth_value and back up security.db.
+database:
+  # mode=rwc creates security.db when it does not already exist.
+  url: "sqlite:///etc/valkyr/runtime/example.db?mode=rwc"
+  max_connections: 2
+  connection_timeout_seconds: 30
+  query_timeout_seconds: 60
+
+valkyr:
+  endpoints:
+    - url: tcp://host.docker.internal:8081
+      # Relative to this adapter config; local setup mounts this file.
+      # Use a dedicated adapter key provisioned through /__auth in production.
+      api_key_file: ./bootstrap-api-key
+  request_timeout: "5s"
+  provider_wait_timeout: "250ms"
+  miss_cache_ttl: "30s"
+  max_retries: 9
+
+logging:
+  level: info
+  format: pretty # use json for newline-delimited structured logs
+  target: false
+  thread_names: false
+  ansi: true
+
+init:
+  # - name: create_auth_registry
+  #   sql: |
+  #     CREATE TABLE IF NOT EXISTS auth_registry (
+  #       api_key TEXT PRIMARY KEY,
+  #       auth_value TEXT NOT NULL
+  #     )
+  # - name: create_security_keys
+  #   sql: |
+  #     CREATE TABLE IF NOT EXISTS security_keys (
+  #       base_scope TEXT NOT NULL PRIMARY KEY,
+  #       key_bytes BLOB NOT NULL CHECK(length(key_bytes) = 32),
+  #       created INTEGER NOT NULL
+  #     )
+  - name: create_example_state
+    sql: |
+      CREATE TABLE IF NOT EXISTS example_state (
+        context TEXT NOT NULL,
+        state_key TEXT NOT NULL,
+        state_value TEXT NOT NULL,
+        PRIMARY KEY (context, state_key)
+      )
+
+# providers:
+#   # Publishes complete records so Valkyr can warm its auth cache.
+#   auth_registry_publisher:
+#     namespace_pattern: "/__auth"
+#     key_pattern: "*"
+#     query: |
+#       SELECT api_key AS key, auth_value AS value,
+#              '/__auth' AS namespace
+#       FROM auth_registry
+#     frequency: "0 */5 * * * *"
+#     description: "Publish authentication records every five minutes"
+#     run_on_startup: true
+
+#   # Periodically publishes every persisted /example::context value.
+#   example_state_publisher:
+#     namespace_pattern: "/example"
+#     key_pattern: "*"
+#     query: |
+#       SELECT state_key AS key, state_value AS value,
+#              '/example' AS namespace, context
+#       FROM example_state
+#     frequency: "0 */5 * * * *"
+#     description: "Publish /example values for every context every five minutes"
+#     run_on_startup: true
+
+queries:
+  # auth_registry_lookup:
+  #   namespace_pattern: "/__auth"
+  #   key_pattern: "{api_key}"
+  #   query: |
+  #     SELECT auth_value AS value
+  #     FROM auth_registry
+  #     WHERE api_key = ?
+  #     LIMIT 1
+  #   parameters: [key]
+  #   description: "Authoritative API-key lookup"
+  #   timeout_seconds: 5
+
+  # security_key_lookup:
+  #   namespace_pattern: "/__secrets"
+  #   key_pattern: "{base_scope}"
+  #   query: |
+  #     INSERT INTO security_keys (base_scope, key_bytes, created)
+  #     VALUES (?, randomblob(32), CAST(strftime('%s', 'now') AS INTEGER))
+  #     ON CONFLICT(base_scope) DO UPDATE SET base_scope = excluded.base_scope
+  #     RETURNING '{"key":"' || lower(hex(key_bytes)) || '","created":' || created || '}' AS value
+  #   parameters: [key]
+  #   description: "Atomic encryption-key lookup/create; back up security.db"
+  #   timeout_seconds: 5
+
+  # Queries register their namespace/key patterns with PROVIDE automatically.
+  example_state_provider:
+    namespace_pattern: "/example"
+    key_pattern: "{key}"
+    query: |
+      SELECT state_value AS value
+      FROM example_state
+      WHERE context = ? AND state_key = ?
+      LIMIT 1
+    parameters: [context, key]
+    description: "Context-aware on-demand provider for /example::context"
+    timeout_seconds: 5
+    provider_wait_timeout: "500ms"
+
+stores:
+  # auth_registry:
+  #   namespace_pattern: "/__auth"
+  #   key_pattern: "{api_key}"
+  #   set_query: |
+  #     INSERT INTO auth_registry (api_key, auth_value)
+  #     VALUES (?, ?)
+  #     ON CONFLICT(api_key) DO UPDATE SET auth_value = excluded.auth_value
+  #   set_parameters: [key, value]
+  #   # Valkyr denies exact /__auth deletes, but the adapter configuration
+  #   # requires a delete statement for its STORE contract.
+  #   delete_query: "DELETE FROM auth_registry WHERE api_key = ?"
+  #   delete_parameters: [key_pattern]
+  #   timeout_seconds: 5
+
+  example_state:
+    namespace_pattern: "/example"
+    key_pattern: "{key}"
+    set_query: |
+      INSERT INTO example_state (context, state_key, state_value)
+      VALUES (?, ?, ?)
+      ON CONFLICT(context, state_key) DO UPDATE SET state_value = excluded.state_value
+    set_parameters: [context, key, value]
+    delete_query: "DELETE FROM example_state WHERE context = ? AND state_key = ?"
+    delete_parameters: [context, key_pattern]
+    timeout_seconds: 5

@@ -1,0 +1,30 @@
+[package]
+name = "valkyr-db-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Database polling adapter for Valkyr"
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+cron.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "any", "sqlite", "postgres", "mysql"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+valkyr-client = { version = "0.1.0", path = "../valkyr-client" }
+valkyr-core = { version = "0.1.0", path = "../valkyr-core" }

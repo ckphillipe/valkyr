@@ -1,0 +1,38 @@
+[package]
+name = "valkyr-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Async TCP client for Valkyr"
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+capi = []
+
+[dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+valkyr-core = { version = "0.1.0", path = "../valkyr-core" }
+webpki-roots.workspace = true
+rustls-pemfile.workspace = true
+
+[dev-dependencies]
+rcgen = "0.13"

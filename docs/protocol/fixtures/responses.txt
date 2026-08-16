@@ -1,0 +1,10 @@
+OK
+SET /users 42 {"name":"Ada"} EX 300
+MISS 25
+UNKNOWN
+OK client-1 TTL 3600
+MISS 10
+KO "invalid API key"
+PONG
+STATS REQUESTS 10 HITS 5 MISSES 3 VALUES 2
+KO "provider unavailable"

@@ -1,0 +1,71 @@
+# OpenBao adapter configuration for Valkyr's reserved authentication and
+# encryption-key namespaces. Create the AppRole and credential files before
+# starting the adapter; do not place SecretIDs or API keys in this file.
+#
+# For the local OpenBao setup, OpenBao is available at http://localhost:8200.
+# The AppRole policy must grant list and read on valkyr/metadata/security/*
+# and create, read, update, delete on valkyr/data/security/*.
+openbao:
+  address: http://localhost:8200
+  ca_certificate_file: 
+  kv_mount: valkyr
+  prefix: security
+  request_timeout_seconds: 5
+  auth:
+    type: approle
+    # Replace with the AppRole RoleID created for this adapter.
+    role_id: replace-with-openbao-role-id
+    # Relative paths resolve from this example directory.
+    secret_id_file: ./openbao-secret-id
+    renew_before_seconds: 60
+
+valkyr:
+  endpoints:
+    # Use the TLS listener and the certificate's DNS name.
+    - url: tls://host:8443
+      # Use the Valkyr bootstrap key only for local setup. Provision a
+      # dedicated adapter key through /__auth for production.
+      api_key_file: ./bootstrap-api-key
+      ca_certificate_file: ./tls/host.crt
+  request_timeout: "5s"
+  provider_wait_timeout: "250ms"
+  miss_cache_ttl: "30s"
+  max_retries: 9
+
+logging:
+  level: info
+  format: pretty # use json for newline-delimited structured logs
+
+providers:
+  # Publishes complete authorization records to sync Valkyr's auth cache.
+  auth_registry:
+    namespace: /__auth
+    frequency: "0 */5 * * * *"
+    run_on_startup: true
+
+  # Warms persisted scope keys into Valkyr's local cache. These bootstrap-only
+  # writes bypass stores and do not write back to OpenBao.
+  # Creates a 32-byte XChaCha20-Poly1305 key atomically on the first lookup.
+  # Preserve the OpenBao KV mount: losing these records prevents decryption of
+  # values encrypted with the corresponding scope key.
+  security_keys:
+    namespace: /__secrets
+    frequency: "0 */5 * * * *"
+    run_on_startup: true
+
+# On-missing key generation requires a query definition.
+queries:
+  security_keys:
+    namespace_pattern: /__secrets
+    key_pattern: "*"
+    on_missing:
+      generate_xchacha20poly1305_key: true
+      record_created_unix_seconds: true
+    provider_wait_timeout: "0ms"
+
+stores:
+  # The bootstrap API key is the only Valkyr credential permitted to write
+  # /__auth. This store makes those authorization records durable in OpenBao.
+  auth_registry:
+    namespace_pattern: /__auth
+    key_pattern: "*"

@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkyr-server-config
+data:
+  server.yml: |
+    native_listen: 0.0.0.0:8081
+    http_listen: 0.0.0.0:8080
+    metrics_listen: 0.0.0.0:8090
+    log_filter: info
+    auth:
+      bootstrap_api_key_file: /run/valkyr/secrets/bootstrap-api-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkyr-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkyr-server
+  template:
+    metadata:
+      labels:
+        app: valkyr-server
+    spec:
+      containers:
+        - name: server
+          image: valkyr-server:latest
+          args: ["--config", "/etc/valkyr/server.yml"]
+          ports:
+            - name: native
+              containerPort: 8081
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 8090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/valkyr
+              readOnly: true
+            - name: bootstrap-api-key
+              mountPath: /run/valkyr/secrets
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: valkyr-server-config
+        - name: bootstrap-api-key
+          secret:
+            secretName: valkyr-bootstrap-api-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkyr-server
+spec:
+  selector:
+    app: valkyr-server
+  ports:
+    - name: native
+      port: 8081
+      targetPort: native
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: metrics
+      port: 8090
+      targetPort: metrics
