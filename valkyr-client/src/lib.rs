@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn verified_tls_config_accepts_pem_ca_certificates() {
-        let certificate = include_bytes!("../../example/tls/valkyr.test.crt");
+        let certificate = include_bytes!("../../example/tls/localhost.crt");
         assert!(verified_tls_config(Some(certificate)).is_ok());
     }
 

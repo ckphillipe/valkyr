@@ -3,7 +3,7 @@ use crate::{
     StorageWriter, StoreConfig, decode,
 };
 use async_trait::async_trait;
-use std::{sync::Arc, time::Duration};
+use std::{cmp::Ordering, sync::Arc, time::Duration};
 use tracing::warn;
 use valkyr_client::{ClientBuilder, ServerCommandHandler};
 use valkyr_core::{
@@ -338,24 +338,28 @@ async fn list_auth_paths(
                     "OpenBao auth provider path had an invalid digest segment".into(),
                 ));
             }
-            if depth < 3 {
-                if !is_collection {
-                    return Err(AdapterError::Configuration(
-                        "OpenBao auth provider path ended before four digest segments".into(),
-                    ));
+            match depth.cmp(&3) {
+                Ordering::Less => {
+                    if !is_collection {
+                        return Err(AdapterError::Configuration(
+                            "OpenBao auth provider path ended before four digest segments".into(),
+                        ));
+                    }
+                    let mut next_parts = parts.clone();
+                    next_parts.push(segment.to_owned());
+                    pending.push((format!("{current}/{segment}"), depth + 1, next_parts));
                 }
-                let mut next_parts = parts.clone();
-                next_parts.push(segment.to_owned());
-                pending.push((format!("{current}/{segment}"), depth + 1, next_parts));
-            } else if depth == 3 {
-                if is_collection {
-                    return Err(AdapterError::Configuration(
-                        "OpenBao auth provider path had more than four digest segments".into(),
-                    ));
+                Ordering::Equal => {
+                    if is_collection {
+                        return Err(AdapterError::Configuration(
+                            "OpenBao auth provider path had more than four digest segments".into(),
+                        ));
+                    }
+                    let mut complete = parts.clone();
+                    complete.push(segment.to_owned());
+                    paths.push((format!("{current}/{segment}"), complete));
                 }
-                let mut complete = parts.clone();
-                complete.push(segment.to_owned());
-                paths.push((format!("{current}/{segment}"), complete));
+                Ordering::Greater => {}
             }
         }
     }

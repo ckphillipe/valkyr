@@ -464,7 +464,7 @@ mod tests {
         fs::write(root.join("secret-id"), "secret\n").unwrap();
         fs::write(root.join("api-key"), "endpoint-key\n").unwrap();
         fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../example/tls/valkyr.test.crt"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../example/tls/localhost.crt"),
             root.join("ca.crt"),
         )
         .unwrap();

@@ -1,6 +1,6 @@
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::time::Duration;
+use std::{fmt::Write as _, time::Duration};
 use valkyr_core::{Key, NamespaceContext};
 
 use crate::{AdapterError, Result};
@@ -48,10 +48,10 @@ impl OpenBaoMapping {
     }
     pub fn auth_key_parts(&self, key: &Key) -> [String; 4] {
         let digest = Sha256::digest(key.as_str().as_bytes());
-        let hex = digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+        }
         [
             hex[0..16].to_owned(),
             hex[16..32].to_owned(),

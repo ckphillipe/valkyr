@@ -859,7 +859,7 @@ mod tests {
             format!(
                 "database: {{ url: sqlite://./state.db }}\nvalkyr:\n  endpoints:\n    - url: tls://valkyr.test:8443\n      api_key_file: api-key\n      ca_certificate_file: {}\n",
                 Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../example/tls/valkyr.test.crt")
+                    .join("../example/tls/localhost.crt")
                     .display()
             ),
         )
