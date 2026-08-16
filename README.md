@@ -14,6 +14,8 @@ Each namespace can be assigned to a backend adapter that defines how Valkyr retr
 
 Valkyr can keep frequently accessed values in memory and load missing data from the appropriate backend on demand. Access control, expiration, and encryption are built in.
 
+Valkyr is memory-first: active key/value entries served directly by the server live in its in-memory store. Durable adapters are backing stores and providers : they persist writes and reload values after cache misses, but they do not let Valkyr serve an arbitrarily large dataset directly from disk. The working set therefore needs to fit within the server's available or configured memory; entries may expire or be evicted and then repopulated on demand. Without a durable adapter, all in-memory data is lost when the server restarts.
+
 > AI-assisted, human-directed. Valkyr is early-stage software (`0.1.0`). Read the [security guide](docs/security.md).
 
 ## Quick start
