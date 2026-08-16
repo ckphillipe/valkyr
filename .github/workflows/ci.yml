@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [main]
     tags: ["*"]
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  test:ß
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
