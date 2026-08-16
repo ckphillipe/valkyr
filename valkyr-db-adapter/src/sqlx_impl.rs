@@ -168,7 +168,8 @@ impl DatabaseManager {
     }
 }
 /// A scheduled source backed by any database supported by SQLx Any.
-#[derive(Clone, Debug)]pub struct DatabaseSource {
+#[derive(Clone, Debug)]
+pub struct DatabaseSource {
     database: DatabaseManager,
     provider: ProviderConfig,
 }
