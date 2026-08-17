@@ -28,7 +28,7 @@ Scheduled SQLx providers expect a query returning these aliases:
 | --- | --- | --- |
 | `namespace` | text | Valkyr namespace |
 | `key` | text | Valkyr key |
-| `value` | text | Valid JSON value |
+| `value` | text or UTF-8 BLOB | JSON value, or text preserved as a JSON string |
 | `ttl_seconds` | integer, nullable | Optional value lifetime |
 
 ## Docker
@@ -112,8 +112,10 @@ stores:
 Provider queries must return `key` and `value`. They may also return `namespace`
 or `ns`; otherwise `namespace_pattern` is used. An optional row `context`
 becomes a `namespace::context` route. Query callbacks return the first column
-of their first row (JSON text is decoded; other SQL types become their
-equivalent JSON values). SQL parameters may use `namespace`,
+of their first row (SQL text and UTF-8 BLOB values use JSON-or-string decoding;
+other SQL types become their equivalent JSON values). Arbitrary binary payloads
+are rejected with column and database-type conversion context, so binary values
+must be UTF-8 when used as provider values. SQL parameters may use `namespace`,
 `context`, `key`, `key_pattern`, `value`, `ttl_seconds`, or captures from
 `{name}` / `${name}` patterns. Parameter names are checked against those
 declared route captures at startup, so spelling mistakes fail configuration

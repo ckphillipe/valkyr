@@ -226,9 +226,20 @@ fn yaml_parameter(value: &serde_yaml::Value) -> Result<AnyParameter> {
 }
 fn any_json(row: &sqlx::any::AnyRow, index: usize) -> Result<Value> {
     if let Ok(value) = row.try_get::<Option<String>, _>(index) {
-        return Ok(value
-            .map(|value| serde_json::from_str(&value).unwrap_or(Value::String(value)))
-            .unwrap_or(Value::Null));
+        return Ok(value.map(json_value_from_text).unwrap_or(Value::Null));
+    }
+    if let Ok(value) = row.try_get::<Option<Vec<u8>>, _>(index) {
+        return match value {
+            Some(value) => String::from_utf8(value)
+                .map(json_value_from_text)
+                .map_err(|error| {
+                    AdapterError::Configuration(format!(
+                        "database {} contains non-UTF-8 binary data: {error}",
+                        column_context(row, index)
+                    ))
+                }),
+            None => Ok(Value::Null),
+        };
     }
     if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
         return Ok(value.map(Value::from).unwrap_or(Value::Null));
@@ -244,9 +255,19 @@ fn any_json(row: &sqlx::any::AnyRow, index: usize) -> Result<Value> {
     if let Ok(value) = row.try_get::<Option<bool>, _>(index) {
         return Ok(value.map(Value::Bool).unwrap_or(Value::Null));
     }
-    Err(AdapterError::Configuration(
-        "database value cannot be represented as JSON".into(),
-    ))
+    Err(AdapterError::Configuration(format!(
+        "database {} cannot be represented as JSON",
+        column_context(row, index)
+    )))
+}
+fn json_value_from_text(value: String) -> Value {
+    serde_json::from_str(&value).unwrap_or(Value::String(value))
+}
+fn column_context(row: &sqlx::any::AnyRow, index: usize) -> String {
+    row.columns()
+        .get(index)
+        .map(|column| format!("column '{}' (type {})", column.name(), column.type_info()))
+        .unwrap_or_else(|| format!("column at index {index}"))
 }
 fn column_index(row: &sqlx::any::AnyRow, name: &str) -> Result<usize> {
     row.columns()
@@ -569,6 +590,103 @@ impl StorageWriter for DatabaseStoreWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn test_database() -> DatabaseManager {
+        DatabaseManager::connect(&DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: 1,
+            connection_timeout_seconds: 5,
+            query_timeout_seconds: 5,
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn scheduled_provider_decodes_blob_json_and_null_values() {
+        let database = test_database().await;
+        let values = DatabaseSource::new(
+            database,
+            ProviderConfig {
+                namespace_pattern: None,
+                key_pattern: None,
+                query: "SELECT '/people' AS namespace, 'profile' AS key, CAST('{\"name\":\"Ada\"}' AS BLOB) AS value UNION ALL SELECT '/people', 'missing', CAST(NULL AS BLOB)".into(),
+                parameters: BTreeMap::new(),
+                frequency: "0 * * * * *".into(),
+                run_on_startup: false,
+                ttl_seconds: None,
+                description: None,
+            },
+        )
+        .fetch_values()
+        .await
+        .unwrap();
+
+        assert_eq!(values[0].value, serde_json::json!({"name": "Ada"}));
+        assert_eq!(values[1].value, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn query_provider_decodes_blob_plain_text() {
+        let provider = DatabaseQueryProvider::new(
+            test_database().await,
+            QueryConfig {
+                namespace_pattern: "/people".into(),
+                key_pattern: "{id}".into(),
+                query: "SELECT CAST('Ada' AS BLOB) AS value".into(),
+                parameters: Vec::new(),
+                description: None,
+                timeout_seconds: None,
+                ttl_seconds: None,
+                provider_wait_timeout: None,
+                miss_cache_ttl: None,
+            },
+        )
+        .unwrap();
+
+        let value = provider
+            .query(
+                NamespaceContext::new("/people").unwrap(),
+                Key::new("ada").unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(value.value, Value::String("Ada".into()));
+    }
+
+    #[tokio::test]
+    async fn blob_with_invalid_utf8_reports_column_and_type() {
+        let database = test_database().await;
+        database
+            .execute_init(&InitConfig {
+                name: "invalid_blob".into(),
+                sql: "CREATE TABLE values_table (namespace TEXT, key TEXT, value BLOB); INSERT INTO values_table VALUES ('/people', 'profile', X'80');".into(),
+                timeout_seconds: 5,
+            })
+            .await
+            .unwrap();
+        let source = DatabaseSource::new(
+            database,
+            ProviderConfig {
+                namespace_pattern: None,
+                key_pattern: None,
+                query: "SELECT namespace, key, value FROM values_table".into(),
+                parameters: BTreeMap::new(),
+                frequency: "0 * * * * *".into(),
+                run_on_startup: false,
+                ttl_seconds: None,
+                description: None,
+            },
+        );
+
+        let error = source.fetch_values().await.unwrap_err().to_string();
+        assert!(error.contains("value"));
+        assert!(error.contains("BLOB"));
+        assert!(error.contains("non-UTF-8"));
+    }
+
     #[tokio::test]
     async fn generic_database_manager_runs_init_and_reads_provider_rows() {
         let database = DatabaseManager::connect(&DatabaseConfig {

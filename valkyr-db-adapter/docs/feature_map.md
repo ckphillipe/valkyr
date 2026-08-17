@@ -14,7 +14,7 @@ write-through persistence.
 | `StorageWriter` | Handle `Persist*` mutations before the server commits to its cache. |
 | `CallbackBridge` | Routes streaming callbacks to the first matching provider / newest matching writer. |
 | `ReconnectingPublisher` | Serialized multicast publish with one reconnecting client per endpoint. |
-| `DatabaseManager` | SQLx `Any` pool + query timeouts; init statements; provider row mapping (`namespace`/`ns` + optional `context` → `ns::context`). |
+| `DatabaseManager` | SQLx `Any` pool + query timeouts; init statements; provider row mapping (`namespace`/`ns` + optional `context` → `ns::context`); JSON-or-string decoding for SQL text and UTF-8 BLOB values. |
 
 ## Implementations
 
@@ -72,8 +72,9 @@ suppresses callback loops; forwarding has no retry or durable outbox.
 
 In-crate tests cover independent provider-option inheritance including explicit
 zero overrides, multi-endpoint registration and restoration capture, parameter
-validation, capture binding, SQLx init/provider reads, batch rollback, context
-decoration rules, and context moves. `valkyr-server/tests/server_adapter.rs` adds a configured
+validation, capture binding, SQLx init/provider reads, scheduled and on-demand
+UTF-8 BLOB decoding (including nullable and invalid binary values), batch
+rollback, context decoration rules, and context moves. `valkyr-server/tests/server_adapter.rs` adds a configured
 SQLite end-to-end path: it registers the callback bridge with a live native
 server and verifies auth lookup, security-key lookup, provider refresh, and
 durable storage mutations. See `example/sqlite-security-config.yml` for a full
