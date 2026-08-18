@@ -2,7 +2,7 @@ use std::{
     fs,
     net::SocketAddr,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -62,7 +62,8 @@ struct Fixture {
     replica_native: SocketAddr,
     http: SocketAddr,
     metrics: SocketAddr,
-    _adapters: Vec<StreamingClient>,
+    adapters: Vec<StreamingClient>,
+    persist_counters: Vec<Arc<AtomicUsize>>,
     native_shutdown: watch::Sender<()>,
     http_shutdown: watch::Sender<()>,
     metrics_shutdown: watch::Sender<()>,
@@ -123,24 +124,30 @@ impl Fixture {
                 .expect("initialize SQLite database");
         }
 
-        let adapter_id = Uuid::new_v4();
-        let endpoint_builders = [native, replica_native]
-            .into_iter()
-            .map(|endpoint| {
-                ClientBuilder::new()
-                    .server(endpoint.to_string())
-                    .api_key(BOOTSTRAP_KEY)
-                    .adapter_instance(adapter_id)
-                    .connection_timeout(Duration::from_secs(1))
-                    .request_timeout(Duration::from_secs(1))
-            })
-            .collect::<Vec<_>>();
         let mut adapters = Vec::new();
+        let mut persist_counters = Vec::new();
         for (source_endpoint, endpoint) in [native, replica_native].into_iter().enumerate() {
+            let adapter_id = Uuid::new_v4();
+            let endpoint_builders = [native, replica_native]
+                .into_iter()
+                .map(|endpoint| {
+                    ClientBuilder::new()
+                        .server(endpoint.to_string())
+                        .api_key(BOOTSTRAP_KEY)
+                        .adapter_instance(adapter_id)
+                        .connection_timeout(Duration::from_secs(1))
+                        .request_timeout(Duration::from_secs(1))
+                })
+                .collect::<Vec<_>>();
             let bridge = Arc::new(
                 config
                     .database_callback_bridge(database.clone())
                     .expect("create database callback bridge")
+                    .with_persist_counter({
+                        let counter = Arc::new(AtomicUsize::new(0));
+                        persist_counters.push(counter.clone());
+                        counter
+                    })
                     .with_forwarding(endpoint_builders.clone(), source_endpoint),
             );
             let adapter = StreamingClient::connect(endpoint, BOOTSTRAP_KEY, adapter_id, bridge)
@@ -155,7 +162,8 @@ impl Fixture {
             replica_native,
             http,
             metrics,
-            _adapters: adapters,
+            adapters,
+            persist_counters,
             native_shutdown,
             http_shutdown,
             metrics_shutdown,
@@ -538,6 +546,10 @@ fn report_benchmark(name: &str, operations: u64, elapsed: Duration) {
 
 #[tokio::test]
 async fn configured_database_adapter_serves_auth_storage_encryption_and_http() {
+    use std::sync::atomic::Ordering;
+
+    use valkyr_core::SetEntry;
+
     let fixture = Fixture::start().await;
     let consumer = Client::connect(fixture.native)
         .await
@@ -569,6 +581,8 @@ async fn configured_database_adapter_serves_auth_storage_encryption_and_http() {
         )
         .await
         .expect("persist initial value");
+    assert_eq!(fixture.persist_counters[0].load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.persist_counters[1].load(Ordering::SeqCst), 0);
     consumer
         .set(
             source.clone(),
@@ -680,6 +694,118 @@ async fn configured_database_adapter_serves_auth_storage_encryption_and_http() {
     );
     assert!(metrics.contains("valkyr_requests_total"));
     assert!(metrics.contains("valkyr_cache_misses_total"));
+
+    // Adapter-originated mutations are committed only to the receiving
+    // server's cache. They must never invoke either storage callback.
+    let callback_counts = fixture
+        .persist_counters
+        .iter()
+        .map(|counter| counter.load(Ordering::SeqCst))
+        .collect::<Vec<_>>();
+    for (adapter_index, adapter) in fixture.adapters.iter().enumerate() {
+        let target = if adapter_index == 0 {
+            &consumer
+        } else {
+            &replica
+        };
+        let namespace =
+            NamespaceContext::new(format!("/example::adapter-{adapter_index}")).unwrap();
+
+        adapter
+            .request(Command::Set {
+                namespace: namespace.clone(),
+                key: Key::new("set").unwrap(),
+                value: json!({"kind": "set"}),
+                ttl_seconds: None,
+            })
+            .await
+            .expect("adapter set");
+        assert_eq!(
+            get_after_replication(target, namespace.clone(), Key::new("set").unwrap()).await,
+            json!({"kind": "set"})
+        );
+
+        adapter
+            .request(Command::SetBatch {
+                namespace: namespace.clone(),
+                entries: vec![
+                    SetEntry {
+                        key: Key::new("batch-a").unwrap(),
+                        value: json!(1),
+                    },
+                    SetEntry {
+                        key: Key::new("batch-b").unwrap(),
+                        value: json!(2),
+                    },
+                ],
+                ttl_seconds: None,
+            })
+            .await
+            .expect("adapter batch set");
+        assert_eq!(
+            get_after_replication(target, namespace.clone(), Key::new("batch-b").unwrap()).await,
+            json!(2)
+        );
+
+        adapter
+            .request(Command::Set {
+                namespace: namespace.clone(),
+                key: Key::new("delete-me").unwrap(),
+                value: json!(true),
+                ttl_seconds: None,
+            })
+            .await
+            .expect("adapter delete setup");
+        adapter
+            .request(Command::Delete {
+                namespace: namespace.clone(),
+                key_pattern: Some(KeyPattern::new("delete-me").unwrap()),
+            })
+            .await
+            .expect("adapter delete");
+        assert!(matches!(
+            target
+                .request(Command::Get {
+                    namespace: namespace.clone(),
+                    key: Key::new("delete-me").unwrap(),
+                })
+                .await
+                .expect("read deleted adapter value"),
+            Response::Miss { .. } | Response::Unknown
+        ));
+
+        let move_source = NamespaceContext::new(format!("{namespace}::move-source")).unwrap();
+        let move_destination =
+            NamespaceContext::new(format!("{namespace}::move-destination")).unwrap();
+        adapter
+            .request(Command::Set {
+                namespace: move_source.clone(),
+                key: Key::new("moved").unwrap(),
+                value: json!("value"),
+                ttl_seconds: None,
+            })
+            .await
+            .expect("adapter move setup");
+        adapter
+            .request(Command::Move {
+                source: move_source,
+                destination: move_destination.clone(),
+            })
+            .await
+            .expect("adapter move");
+        assert_eq!(
+            get_after_replication(target, move_destination, Key::new("moved").unwrap()).await,
+            json!("value")
+        );
+    }
+    assert_eq!(
+        fixture
+            .persist_counters
+            .iter()
+            .map(|counter| counter.load(Ordering::SeqCst))
+            .collect::<Vec<_>>(),
+        callback_counts
+    );
 
     fixture.shutdown().await;
 }

@@ -65,8 +65,8 @@ provider → monitor and independently re-register a dropped callback
 connection. Scheduled providers acquire a 30-second local `/__lease` for each
 value namespace and publish only to endpoints they own. After a local
 store write succeeds, the bridge best-effort forwards the original set, batch,
-delete, or move to every endpoint except its source. The shared adapter UUID
-suppresses callback loops; forwarding has no retry or durable outbox.
+delete, or move to every endpoint except its source. Forwarding has no retry or
+durable outbox.
 
 ## Testing
 

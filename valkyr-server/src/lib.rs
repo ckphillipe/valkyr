@@ -335,9 +335,9 @@ impl Server {
                 "security key provider did not return a key".into(),
             ));
         };
-        let source_adapter = match self.connections.lock().await.get(&dispatch.owner).cloned() {
-            Some(handle) => *handle.adapter_instance.lock().await,
-            None => None,
+        let from_adapter = match self.connections.lock().await.get(&dispatch.owner).cloned() {
+            Some(handle) => handle.adapter_instance.lock().await.is_some(),
+            None => false,
         };
         let outcome = self
             .broker
@@ -346,7 +346,7 @@ impl Server {
                 key,
                 value,
                 ttl_seconds.map(Duration::from_secs),
-                source_adapter,
+                from_adapter,
                 false,
             )
             .await?;
@@ -768,9 +768,9 @@ impl Server {
                 ..
             }) => {
                 let handle = self.connections.lock().await.get(&dispatch.owner).cloned();
-                let source_adapter = match handle {
-                    Some(handle) => *handle.adapter_instance.lock().await,
-                    None => None,
+                let from_adapter = match handle {
+                    Some(handle) => handle.adapter_instance.lock().await.is_some(),
+                    None => false,
                 };
                 let result = self
                     .broker
@@ -779,7 +779,7 @@ impl Server {
                         key,
                         value,
                         ttl_seconds.map(Duration::from_secs),
-                        source_adapter,
+                        from_adapter,
                         dispatch.encrypted,
                     )
                     .await;
@@ -1336,8 +1336,7 @@ mod tests {
     }
 
     struct BlockingValueStorageProvider {
-        started: Notify,
-        release: Notify,
+        persist_calls: AtomicUsize,
     }
 
     #[async_trait]
@@ -1351,8 +1350,7 @@ mod tests {
                     ttl_seconds: None,
                 },
                 ServerCommand::PersistSet { request_id, .. } => {
-                    self.started.notify_one();
-                    self.release.notified().await;
+                    self.persist_calls.fetch_add(1, Ordering::SeqCst);
                     ServerResult::Operation {
                         request_id,
                         error: None,
@@ -1368,7 +1366,9 @@ mod tests {
         }
     }
 
-    struct FailingDurableProvider;
+    struct FailingDurableProvider {
+        persist_calls: AtomicUsize,
+    }
 
     #[async_trait]
     impl ServerCommandHandler for FailingDurableProvider {
@@ -1383,10 +1383,13 @@ mod tests {
                 ServerCommand::PersistSet { request_id, .. }
                 | ServerCommand::PersistSetBatch { request_id, .. }
                 | ServerCommand::PersistDelete { request_id, .. }
-                | ServerCommand::PersistMove { request_id, .. } => ServerResult::Operation {
-                    request_id,
-                    error: Some("durable write failed".into()),
-                },
+                | ServerCommand::PersistMove { request_id, .. } => {
+                    self.persist_calls.fetch_add(1, Ordering::SeqCst);
+                    ServerResult::Operation {
+                        request_id,
+                        error: Some("durable write failed".into()),
+                    }
+                }
             }
         }
     }
@@ -2882,15 +2885,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn waiting_value_is_published_only_after_durable_acceptance() {
+    async fn adapter_provider_value_is_published_without_durable_acceptance() {
         let server = Arc::new(authenticated_server());
         let (shutdown_sender, shutdown_receiver) = watch::channel(());
         let running = server.clone().bind_shared("127.0.0.1:0").await.unwrap();
         let address = running.local_addr().unwrap();
         let task = tokio::spawn(running.run(shutdown_receiver));
         let handler = Arc::new(BlockingValueStorageProvider {
-            started: Notify::new(),
-            release: Notify::new(),
+            persist_calls: AtomicUsize::new(0),
         });
         let storage =
             StreamingClient::connect(address, "bootstrap", Uuid::new_v4(), handler.clone())
@@ -2917,43 +2919,37 @@ mod tests {
             .unwrap();
         let client = Client::connect(address).await.unwrap();
         client.authenticate("bootstrap", None).await.unwrap();
-        let mut request = tokio::spawn(async move {
-            client
-                .request(Command::Get {
-                    namespace: NamespaceContext::new("/people").unwrap(),
-                    key: Key::new("ada").unwrap(),
-                })
-                .await
-        });
-        time::timeout(Duration::from_secs(1), handler.started.notified())
+        let request = client
+            .request(Command::Get {
+                namespace: NamespaceContext::new("/people").unwrap(),
+                key: Key::new("ada").unwrap(),
+            })
             .await
             .unwrap();
         assert!(
-            time::timeout(Duration::from_millis(20), &mut request)
-                .await
-                .is_err()
+            matches!(request, Response::Value { value, .. } if value == json!({"name": "Ada"}))
         );
-        handler.release.notify_one();
-        assert!(
-            matches!(request.await.unwrap().unwrap(), Response::Value { value, .. } if value == json!({"name": "Ada"}))
-        );
+        assert_eq!(handler.persist_calls.load(Ordering::SeqCst), 0);
 
         shutdown_sender.send(()).unwrap();
         task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
-    async fn durable_failure_does_not_publish_or_cache_a_provider_value() {
+    async fn adapter_provider_value_is_cached_even_when_durability_would_fail() {
         let server = Arc::new(authenticated_server());
         let (shutdown_sender, shutdown_receiver) = watch::channel(());
         let running = server.clone().bind_shared("127.0.0.1:0").await.unwrap();
         let address = running.local_addr().unwrap();
         let task = tokio::spawn(running.run(shutdown_receiver));
+        let failing_provider = Arc::new(FailingDurableProvider {
+            persist_calls: AtomicUsize::new(0),
+        });
         let provider = StreamingClient::connect(
             address,
             "bootstrap",
             Uuid::new_v4(),
-            Arc::new(FailingDurableProvider),
+            failing_provider.clone(),
         )
         .await
         .unwrap();
@@ -2986,7 +2982,7 @@ mod tests {
                 })
                 .await
                 .unwrap(),
-            Response::Miss { .. }
+            Response::Value { value, .. } if value == json!({"name": "Ada"})
         ));
         assert!(
             server
@@ -2998,8 +2994,9 @@ mod tests {
                 )
                 .await
                 .unwrap()
-                .is_none()
+                .is_some()
         );
+        assert_eq!(failing_provider.persist_calls.load(Ordering::SeqCst), 0);
         assert!(server.inflight_refreshes.lock().unwrap().is_empty());
 
         shutdown_sender.send(()).unwrap();

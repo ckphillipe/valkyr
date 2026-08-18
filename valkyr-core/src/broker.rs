@@ -400,7 +400,6 @@ impl Broker {
                 self.registry
                     .register_store(
                         context.owner,
-                        context.adapter_instance,
                         namespace_pattern.as_str(),
                         key_pattern.as_str(),
                     )
@@ -485,7 +484,7 @@ impl Broker {
         key: Key,
         value: Value,
         ttl: Option<Duration>,
-        source_adapter: Option<Uuid>,
+        from_adapter: bool,
         encrypted: bool,
     ) -> Result<BrokerOutcome> {
         let value = if encrypted {
@@ -505,7 +504,7 @@ impl Broker {
                 value,
                 ttl,
             },
-            source_adapter,
+            from_adapter,
         )
         .await
     }
@@ -1074,7 +1073,7 @@ impl Broker {
                 value,
                 ttl,
             },
-            context.adapter_instance,
+            context.adapter_instance.is_some(),
         )
         .await
     }
@@ -1119,7 +1118,7 @@ impl Broker {
                 entries: converted,
                 ttl,
             },
-            context.adapter_instance,
+            context.adapter_instance.is_some(),
         )
         .await
     }
@@ -1150,7 +1149,7 @@ impl Broker {
                 namespace,
                 key_pattern,
             },
-            context.adapter_instance,
+            context.adapter_instance.is_some(),
         )
         .await
     }
@@ -1178,7 +1177,7 @@ impl Broker {
                 source,
                 destination,
             },
-            context.adapter_instance,
+            context.adapter_instance.is_some(),
         )
         .await
     }
@@ -1186,8 +1185,12 @@ impl Broker {
     async fn prepare_mutation(
         &self,
         mutation: PendingMutation,
-        source_adapter: Option<Uuid>,
+        from_adapter: bool,
     ) -> Result<BrokerOutcome> {
+        if from_adapter {
+            self.commit(mutation).await?;
+            return Ok(BrokerOutcome::response(Response::Ok));
+        }
         if let PendingMutation::SetBatch {
             namespace,
             entries,
@@ -1198,11 +1201,7 @@ impl Broker {
                 .iter()
                 .map(|entry| KeyPattern::new(entry.key.as_str()))
                 .collect::<Result<Vec<_>>>()?;
-            return match self
-                .registry
-                .store_for_batch(namespace, &patterns, source_adapter)
-                .await
-            {
+            return match self.registry.store_for_batch(namespace, &patterns).await {
                 BatchStoreMatch::Store(store) => Ok(BrokerOutcome {
                     response: Response::Ok,
                     dispatch: Some(Dispatch {
@@ -1275,11 +1274,7 @@ impl Broker {
                 },
             ),
         };
-        match self
-            .registry
-            .store_for(&namespace, &pattern, source_adapter)
-            .await
-        {
+        match self.registry.store_for(&namespace, &pattern).await {
             Some(store) => Ok(BrokerOutcome {
                 response: Response::Ok,
                 dispatch: Some(Dispatch {
@@ -1494,6 +1489,84 @@ mod tests {
     use async_trait::async_trait;
 
     struct GetFailingStore;
+
+    #[tokio::test]
+    async fn adapter_originated_mutations_commit_cache_without_store_dispatch() {
+        let store = Arc::new(MemoryStore::new());
+        let broker = Broker::new(store.clone(), None);
+        broker
+            .registry()
+            .register_store(Uuid::new_v4(), "/values", "*")
+            .await;
+        let context = RequestContext {
+            owner: Uuid::new_v4(),
+            adapter_instance: Some(Uuid::new_v4()),
+            auth: None,
+            variables: BTreeMap::new(),
+        };
+        let namespace = NamespaceContext::new("/values").unwrap();
+        let set = broker
+            .execute(
+                Command::Set {
+                    namespace: namespace.clone(),
+                    key: Key::new("one").unwrap(),
+                    value: serde_json::json!(1),
+                    ttl_seconds: None,
+                },
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(set.dispatch.is_none());
+        assert_eq!(
+            store
+                .get(&namespace, &Key::new("one").unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            serde_json::json!(1)
+        );
+
+        let batch = broker
+            .execute(
+                Command::SetBatch {
+                    namespace: namespace.clone(),
+                    entries: vec![SetEntry {
+                        key: Key::new("two").unwrap(),
+                        value: serde_json::json!(2),
+                    }],
+                    ttl_seconds: None,
+                },
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(batch.dispatch.is_none());
+        let delete = broker
+            .execute(
+                Command::Delete {
+                    namespace: namespace.clone(),
+                    key_pattern: Some(KeyPattern::new("two").unwrap()),
+                },
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(delete.dispatch.is_none());
+
+        let move_out = broker
+            .execute(
+                Command::Move {
+                    source: NamespaceContext::new("/values::source").unwrap(),
+                    destination: NamespaceContext::new("/values::destination").unwrap(),
+                },
+                context,
+            )
+            .await
+            .unwrap();
+        assert!(move_out.dispatch.is_none());
+    }
 
     #[async_trait]
     impl Store for GetFailingStore {
@@ -1775,12 +1848,7 @@ mod tests {
         let broker = Broker::new(store.clone(), Some(auth.clone()));
         broker
             .registry()
-            .register_store(
-                Uuid::new_v4(),
-                Some(Uuid::new_v4()),
-                SECURITY_NAMESPACE,
-                "*",
-            )
+            .register_store(Uuid::new_v4(), SECURITY_NAMESPACE, "*")
             .await;
         let AuthLookup::Authenticated(auth) = auth.authenticate("bootstrap") else {
             panic!("bootstrap key must authenticate");

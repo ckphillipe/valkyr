@@ -1,5 +1,12 @@
 use async_trait::async_trait;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use tracing::warn;
 use valkyr_client::{ClientBuilder, ServerCommandHandler};
 use valkyr_core::{
@@ -13,13 +20,22 @@ use crate::{AdapterError, DatabaseValue, QueryProvider, Result, StorageWriter};
 pub struct CallbackBridge {
     queries: Vec<std::sync::Arc<dyn QueryProvider>>,
     stores: Vec<std::sync::Arc<dyn StorageWriter>>,
+    persist_counter: Option<Arc<AtomicUsize>>,
 }
 impl CallbackBridge {
     pub fn new(
         queries: Vec<std::sync::Arc<dyn QueryProvider>>,
         stores: Vec<std::sync::Arc<dyn StorageWriter>>,
     ) -> Self {
-        Self { queries, stores }
+        Self {
+            queries,
+            stores,
+            persist_counter: None,
+        }
+    }
+    pub fn with_persist_counter(mut self, counter: Arc<AtomicUsize>) -> Self {
+        self.persist_counter = Some(counter);
+        self
     }
     pub fn with_forwarding(
         mut self,
@@ -162,6 +178,17 @@ impl StorageWriter for ForwardingStorageWriter {
 #[async_trait]
 impl ServerCommandHandler for CallbackBridge {
     async fn handle(&self, command: ServerCommand) -> ServerResult {
+        if matches!(
+            &command,
+            ServerCommand::PersistSet { .. }
+                | ServerCommand::PersistSetBatch { .. }
+                | ServerCommand::PersistDelete { .. }
+                | ServerCommand::PersistMove { .. }
+        ) {
+            if let Some(counter) = &self.persist_counter {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }
         match command {
             ServerCommand::Query {
                 request_id,

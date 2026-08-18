@@ -32,7 +32,8 @@ driving one shared `Broker`.
 
 - Provider queries (`ServerCommand::Query`) run in the background; the
   client gets `Miss { retry_after_ms }` immediately and the cache is warmed
-  asynchronously (persisted first when a store adapter matches). Concurrent
+  asynchronously (persisted first when a store adapter matches; values returned
+  by an adapter are cache-only). Concurrent
   misses for the same namespace/key share one in-flight provider refresh.
   Admission owns the provider rate-limit charge, so joiners wait independently
   without consuming capacity. Each broker route state has a stable refresh
@@ -44,7 +45,8 @@ driving one shared `Broker`.
   generation removal; the actual in-flight map preserves value and miss results
   for caller-owned late subscribers.
 - Mutations with a matching store registration are synchronously invoked to
-  the adapter; the cache commits only after adapter success.
+  the adapter for normal clients; adapter-originated mutations commit only to
+  cache and never invoke another storage callback.
 - Encrypted commands prefetch their scope key from the `/__secrets`
   provider before execution (`ensure_command_security_key`).
 - Connection teardown removes the connection's registry entries and drains its

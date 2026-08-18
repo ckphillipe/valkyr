@@ -25,9 +25,10 @@ out `Dispatch` callbacks.
 - **Read:** `Broker::get` → authorize → resolve `${var}`s → memory lookup →
   hit: decrypt if `~key~` → miss: provider dispatch (`Response::Miss` +
   `retry_after_ms`), else `Unknown`.
-- **Write:** authorize → encrypt if marked → `prepare_mutation`: if a store
-  registration matches, return `PendingMutation` + `Persist*` dispatch
-  (transport persists first, then `commit`); otherwise commit immediately.
+- **Write:** authorize → encrypt if marked → `prepare_mutation`: mutations from
+  an adapter-authenticated connection commit only to the local cache; normal
+  mutations use write-through persistence when a store registration matches,
+  otherwise commit immediately.
 - **Encrypted read/write:** transport calls
   `security_key_provider_dispatch` first; keys come from a registered
   `/__secrets` provider as `{key: <64 hex>, created: <unix>}` and are cached
@@ -46,6 +47,8 @@ out `Dispatch` callbacks.
 
 - Durable write before cache write (broker returns `PendingMutation`;
   transport commits only after adapter success).
+- Adapter-originated mutations are cache-only and never dispatch `Persist*`,
+  preventing replicated writes from reflecting back into storage adapters.
 - Batches never split across storage adapters (`BatchStoreMatch::Mixed` is
   an error).
 - `delete`/`move` are denied on `/__auth` and `/__secrets`. Bootstrap-only

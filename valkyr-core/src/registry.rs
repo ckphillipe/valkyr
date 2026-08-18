@@ -24,8 +24,6 @@ pub struct ProviderRegistration {
 pub struct StoreRegistration {
     pub id: Uuid,
     pub owner: ConnectionId,
-    /// Shared adapter identity, used to avoid reflecting mutations to their origin.
-    pub adapter_instance: Option<Uuid>,
     pub namespace_pattern: String,
     pub key_pattern: String,
     pub(crate) namespace_matcher: Pattern,
@@ -80,7 +78,6 @@ impl Registry {
     pub async fn register_store(
         &self,
         owner: ConnectionId,
-        adapter_instance: Option<Uuid>,
         namespace_pattern: impl Into<String>,
         key_pattern: impl Into<String>,
     ) -> StoreRegistration {
@@ -89,7 +86,6 @@ impl Registry {
         let registration = StoreRegistration {
             id: Uuid::new_v4(),
             owner,
-            adapter_instance,
             namespace_matcher: Pattern::new(&namespace_pattern),
             key_matcher: Pattern::new(&key_pattern),
             namespace_pattern,
@@ -134,13 +130,11 @@ impl Registry {
             .clone()
         })
     }
-    /// Most recently registered matching store wins. A mutation from an adapter
-    /// skips every registration sharing its stable adapter instance ID.
+    /// Most recently registered matching store wins.
     pub async fn store_for(
         &self,
         namespace: &NamespaceContext,
         pattern: &KeyPattern,
-        source_adapter: Option<Uuid>,
     ) -> Option<StoreRegistration> {
         self.stores
             .read()
@@ -148,13 +142,12 @@ impl Registry {
             .iter()
             .rev()
             .find(|registration| {
-                source_adapter.is_none_or(|source| registration.adapter_instance != Some(source))
-                    && patterns_overlap(
-                        &registration.namespace_matcher,
-                        &registration.key_matcher,
-                        namespace,
-                        pattern,
-                    )
+                patterns_overlap(
+                    &registration.namespace_matcher,
+                    &registration.key_matcher,
+                    namespace,
+                    pattern,
+                )
             })
             .cloned()
     }
@@ -165,16 +158,9 @@ impl Registry {
         &self,
         namespace: &NamespaceContext,
         patterns: &[KeyPattern],
-        source_adapter: Option<Uuid>,
     ) -> BatchStoreMatch {
         let stores = self.stores.read().await;
-        let candidates: Vec<_> = stores
-            .iter()
-            .rev()
-            .filter(|registration| {
-                source_adapter.is_none_or(|source| registration.adapter_instance != Some(source))
-            })
-            .collect();
+        let candidates: Vec<_> = stores.iter().rev().collect();
         let any_matches = candidates.iter().any(|registration| {
             patterns.iter().any(|pattern| {
                 patterns_overlap(
@@ -319,10 +305,10 @@ mod tests {
     async fn batch_selection_rejects_split_store_routes() {
         let registry = Registry::new();
         registry
-            .register_store(Uuid::new_v4(), None, "/values", "a*")
+            .register_store(Uuid::new_v4(), "/values", "a*")
             .await;
         registry
-            .register_store(Uuid::new_v4(), None, "/values", "b*")
+            .register_store(Uuid::new_v4(), "/values", "b*")
             .await;
         let outcome = registry
             .store_for_batch(
@@ -331,40 +317,27 @@ mod tests {
                     KeyPattern::new("alpha").unwrap(),
                     KeyPattern::new("beta").unwrap(),
                 ],
-                None,
             )
             .await;
         assert!(matches!(outcome, BatchStoreMatch::Mixed));
     }
 
     #[tokio::test]
-    async fn newest_matching_store_wins_and_source_adapter_is_excluded() {
+    async fn newest_matching_store_wins() {
         let registry = Registry::new();
         let namespace = NamespaceContext::new("/values").unwrap();
         let pattern = KeyPattern::new("entry").unwrap();
-        let first_adapter = Uuid::new_v4();
         let first = registry
-            .register_store(Uuid::new_v4(), Some(first_adapter), "/values", "entry")
+            .register_store(Uuid::new_v4(), "/values", "entry")
             .await;
         let newest = registry
-            .register_store(Uuid::new_v4(), Some(Uuid::new_v4()), "/values", "entry")
+            .register_store(Uuid::new_v4(), "/values", "entry")
             .await;
 
         assert_eq!(
-            registry
-                .store_for(&namespace, &pattern, None)
-                .await
-                .unwrap()
-                .id,
+            registry.store_for(&namespace, &pattern).await.unwrap().id,
             newest.id
         );
-        assert_eq!(
-            registry
-                .store_for(&namespace, &pattern, Some(newest.adapter_instance.unwrap()))
-                .await
-                .unwrap()
-                .id,
-            first.id
-        );
+        assert_ne!(first.id, newest.id);
     }
 }
