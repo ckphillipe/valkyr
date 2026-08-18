@@ -535,9 +535,9 @@ impl Server {
                         Ok(outcome) => {
                             if let Some(authenticated) = outcome.authenticated.clone() {
                                 context.auth = Some(authenticated);
-                                if let Some(handle) =
-                                    server.connections.lock().await.get(&id).cloned()
-                                {
+                                let connection =
+                                    { server.connections.lock().await.get(&id).cloned() };
+                                if let Some(handle) = connection {
                                     *handle.adapter_instance.lock().await =
                                         context.adapter_instance;
                                 }
@@ -981,8 +981,10 @@ impl Server {
                 *request_id
             }
         };
-        if let Some(pending) = self.pending_results.lock().await.remove(&request_id) {
-            if let Some(handle) = self.connections.lock().await.get(&pending.owner).cloned() {
+        let pending = { self.pending_results.lock().await.remove(&request_id) };
+        if let Some(pending) = pending {
+            let connection = { self.connections.lock().await.get(&pending.owner).cloned() };
+            if let Some(handle) = connection {
                 handle.pending.lock().await.ids.remove(&request_id);
             }
             let _ = pending.sender.send(result);
@@ -1748,6 +1750,76 @@ mod tests {
 
         assert!(server.invoke(dispatch).await.is_err());
         assert_eq!(server.pending_results_len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn callback_completion_releases_global_locks_before_connection_lock() {
+        let server = Arc::new(Server::in_memory());
+        let owner = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let (outbound, _receiver) = mpsc::channel(1);
+        let (shutdown, _) = watch::channel(());
+        let handle = Arc::new(ConnectionHandle {
+            outbound,
+            adapter_instance: Mutex::new(None),
+            pending: Mutex::new(PendingRequests {
+                ids: HashSet::from([request_id]),
+                closed: false,
+            }),
+            shutdown,
+        });
+        server
+            .connections
+            .lock()
+            .await
+            .insert(owner, handle.clone());
+        let (sender, _receiver) = oneshot::channel();
+        server.pending_results.lock().await.insert(
+            request_id,
+            PendingResult {
+                owner,
+                sender,
+                command: ServerCommand::Query {
+                    request_id,
+                    namespace: NamespaceContext::new("/people").unwrap(),
+                    key: Key::new("ada").unwrap(),
+                },
+            },
+        );
+
+        let connection_pending = handle.pending.lock().await;
+        let completion = tokio::spawn({
+            let server = server.clone();
+            async move {
+                server
+                    .complete_result(ServerResult::Query {
+                        request_id,
+                        value: None,
+                        error: None,
+                        ttl_seconds: None,
+                    })
+                    .await;
+            }
+        });
+        time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(pending_results) = server.pending_results.try_lock() {
+                    if !pending_results.contains_key(&request_id) {
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("callback completion retained the pending-results lock");
+        let connections = time::timeout(Duration::from_millis(100), server.connections.lock())
+            .await
+            .expect("callback completion retained the connections lock");
+        drop(connections);
+
+        drop(connection_pending);
+        completion.await.unwrap();
     }
 
     #[tokio::test]

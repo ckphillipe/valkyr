@@ -7,8 +7,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://github.com/dsoupra/valkyr"
-homepage = "https://github.com/dsoupra/valkyr"
+repository = "https://github.com/ckphillipe/valkyr"
+homepage = "https://github.com/ckphillipe/valkyr"
 keywords = ["cache", "routing", "state", "distributed"]
 categories = ["network-programming", "caching"]
 
